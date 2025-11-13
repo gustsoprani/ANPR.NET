@@ -4,20 +4,40 @@
 using ANPR.Shared; // <-- Adicionado para IVideoSource
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
-using System.Runtime.InteropServices;
 using OpenCvSharp;  // <-- Adicionado para Mat
+using OpenCvSharp.Dnn;
 using System;
-using System.IO;
-using Tesseract;
 using System.Collections.Generic; // <-- Adicionado para List<>
 using System.Drawing; // <-- Adicionado para Size e Scalar
-using OpenCvSharp.Dnn;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using Tesseract;
 
 namespace ANPR.Core
 {
     // 2. A classe agora herda de IDisposable
     public class AnprProcessor : IDisposable
     {
+        // Dicionário 1: "Letras" que o Tesseract leu errado (onde deveriam ser NÚMEROS)
+        private static readonly Dictionary<char, char> _charToDigit = new Dictionary<char, char>
+        {
+            { 'O', '0' },
+            { 'I', '1' },
+            { 'S', '5' },
+            { 'B', '8' },
+            { 'Z', '7' } 
+        };
+
+        // Dicionário 2: "Números" que o Tesseract leu errado (onde deveriam ser LETRAS)
+        private static readonly Dictionary<char, char> _digitToChar = new Dictionary<char, char>
+        {
+            { '0', 'O' },
+            { '1', 'I' },
+            { '5', 'S' },
+            { '8', 'B' },
+            { '7', 'Z' }
+        };
         // 3. Criar variáveis "readonly" para guardar nossos motores
         private readonly InferenceSession _yoloSession;
         private readonly TesseractEngine _tesseractEngine;
@@ -161,12 +181,17 @@ namespace ANPR.Core
             // 1. Pegar o Tensor "bruto" (a "planilha")
             var tensor = result.Value as DenseTensor<float>;
 
+            if (tensor == null)
+            {
+                return new List<OpenCvSharp.Rect>();
+            }
+
             // 2. Criar a lista final que vamos retornar
             var detections = new List<OpenCvSharp.Rect>();
 
             // 3. Definir o filtro de confiança (A SUA IDEIA!)
             // (Qualquer coisa abaixo de 70% de certeza será ignorada)
-            const float confidenceThreshold = 0.70f;
+            const float confidenceThreshold = 0.75f;
 
             // 4. Pegar as dimensões da "planilha". 
             // A saída do YOLOv8 é [1, 84, 8400]
@@ -192,8 +217,7 @@ namespace ANPR.Core
                     }
                 }
 
-                // 7. O FILTRO (A SUA IDEIA!)
-                // É aqui que checamos sua lógica de 70%
+                // 7. O FILTRO POR CONFIANÇA
                 if (score > confidenceThreshold)
                 {
                     // 8. Pegar as Coordenadas (A "Caixa")
@@ -243,7 +267,77 @@ namespace ANPR.Core
         }
         private string RunTesseractProcess(OpenCvSharp.Rect placaRect, Mat frame)
         {
-            return "";
+            // --- PASSO 1: PRÉ-PROCESSAMENTO (O que já discutimos) ---
+
+            // 1. Recortar
+            using Mat placaCortada = new Mat(frame, placaRect);
+
+            // 2. Upscaling (Ex: 2x)
+            using Mat placaAmpliada = placaCortada.Resize(new OpenCvSharp.Size(0, 0), 2.0, 2.0, InterpolationFlags.Cubic);
+
+            // 3. Tons de Cinza
+            using Mat placaCinza = placaAmpliada.CvtColor(ColorConversionCodes.BGR2GRAY);
+
+            // 4. Binarização (Preto e Branco com Otsu)
+            using Mat placaBinaria = new Mat();
+            Cv2.Threshold(placaCinza, placaBinaria, 0, 255, ThresholdTypes.Binary | ThresholdTypes.Otsu);
+
+
+            // --- PASSO 2: ANÁLISE (Rodar o Tesseract) ---
+
+            // O Tesseract gosta de um "bitmap"
+            using var pix = Pix.LoadFromMemory(placaBinaria.ToBytes());
+            using var page = _tesseractEngine.Process(pix, PageSegMode.SingleLine); // Usando a dica do TCC (PSM 7)
+
+            string textoBruto = page.GetText(); // Ex: " G AS 9G59 " ou " ABC-1234 "
+
+
+            // --- PASSO 3: PÓS-PROCESSAMENTO (O que você pediu) ---
+
+            // 1. Limpeza Bruta (Sua ideia)
+            string textoLimpo = textoBruto.Replace(" ", "").Replace("-", "").Trim(); // Trim() remove espaços/quebras de linha no início/fim
+
+            // 2. Correção Inteligente (Padrão Mercosul LLLNLNN)
+            // Só tentamos corrigir se o texto tiver o tamanho certo (7)
+            if (textoLimpo.Length == 7)
+            {
+                // Usamos um StringBuilder para poder "mudar" a string
+                var stringBuilder = new System.Text.StringBuilder(textoLimpo);
+
+                // O Loop 'for' que você montou
+                for (int i = 0; i < stringBuilder.Length; i++)
+                {
+                    char caractereAtual = stringBuilder[i];
+
+                    // Padrão LLLNLNN:
+                    // Posições 0, 1, 2, 4 DEVEM ser LETRAS
+                    if ((i == 0 || i == 1 || i == 2 || i == 4) && char.IsDigit(caractereAtual))
+                    {
+                        // ERRO: Encontramos um NÚMERO onde deveria ser LETRA
+                        // Vamos checar nossa "biblioteca" (Dicionário 2)
+                        if (_digitToChar.ContainsKey(caractereAtual))
+                        {
+                            stringBuilder[i] = _digitToChar[caractereAtual]; // Corrige! (ex: '1' -> 'I')
+                        }
+                    }
+                    // Posições 3, 5, 6 DEVEM ser NÚMEROS
+                    else if ((i == 3 || i == 5 || i == 6) && char.IsLetter(caractereAtual))
+                    {
+                        // ERRO: Encontramos uma LETRA onde deveria ser NÚMERO
+                        // Vamos checar nossa "biblioteca" (Dicionário 1)
+                        if (_charToDigit.ContainsKey(caractereAtual))
+                        {
+                            stringBuilder[i] = _charToDigit[caractereAtual]; // Corrige! (ex: 'O' -> '0')
+                        }
+                    }
+                }
+
+                // Retornamos a string corrigida do StringBuilder
+                return stringBuilder.ToString();
+            }
+
+            // Se não tiver 7 caracteres, retorne a limpeza bruta
+            return textoLimpo;
         }
     }
 }
