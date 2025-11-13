@@ -43,37 +43,11 @@ namespace ANPR.Core
 
             Console.WriteLine("[INFO] Fonte de vídeo carregada com sucesso.");
 
-            // 6. USAR O 'USING' PARA CORRIGIR O "LEAK"
             // (O 'using' garante que o método 'Dispose' será chamado no final)
             using (var processador = new AnprProcessor(videoSource))
             {
-                // AQUI É ONDE A MÁGICA VAI ACONTECER
-                // (Por enquanto, vamos só exibir o vídeo)
-
-                Console.WriteLine("[INFO] Iniciando loop de processamento... Pressione 'q' para sair.");
-
-                while (true)
-                {
-                    // 7. Puxar um frame dos "olhos"
-                    using (Mat frame = videoSource.GetNextFrame())
-                    {
-                        if (frame.Empty())
-                        {
-                            Console.WriteLine("Fonte de vídeo terminou.");
-                            break;
-                        }
-
-                        // ETAPA DE TESTE: Mostrar o vídeo na tela
-                        Cv2.ImShow("ANPR.Core - Teste de Vídeo", frame);
-                    }
-
-                    // 8. Checar se o usuário apertou 'q'
-                    if (Cv2.WaitKey(1) == 'q')
-                    {
-                        break;
-                    }
-                }
-            } // <-- O 'Dispose()' do AnprProcessor é chamado automaticamente aqui
+                processador.StartProcessing();
+            }
 
             Console.WriteLine(">>> SISTEMA ANPR ENCERRADO <<<");
         }
