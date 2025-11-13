@@ -6,4 +6,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\ANPR.Shared\ANPR.Shared.csproj" />
+  </ItemGroup>
+
 </Project>

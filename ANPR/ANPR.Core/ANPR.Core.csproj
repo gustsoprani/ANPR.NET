@@ -19,6 +19,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\ANPR.Shared\ANPR.Shared.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Update="models\best.onnx">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
