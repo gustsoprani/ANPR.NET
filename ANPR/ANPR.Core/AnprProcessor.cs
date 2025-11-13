@@ -5,30 +5,36 @@ using Microsoft.ML.OnnxRuntime;
 using Tesseract;
 using System;
 using System.IO;
+using ANPR.Shared; // <-- Adicionado para IVideoSource
+using OpenCvSharp;  // <-- Adicionado para Mat (que virá em breve)
 
 namespace ANPR.Core
 {
-    public class AnprProcessor
+    // 2. A classe agora herda de IDisposable
+    public class AnprProcessor : IDisposable
     {
-        // 2. Criar variáveis "readonly" para guardar nossos motores
+        // 3. Criar variáveis "readonly" para guardar nossos motores
         private readonly InferenceSession _yoloSession;
         private readonly TesseractEngine _tesseractEngine;
 
-        // 3. Definir os caminhos (relativos ao local do .exe)
+        // 4. Adicionar a variável para guardar nossos "olhos" (POO)
+        private readonly IVideoSource _videoSource;
+
+        // 5. Definir os caminhos (relativos ao local do .exe)
         private const string YoloModelPath = "models/best.onnx";
         private const string TessDataPath = "tessdata";
         private const string TessLang = "por"; // "por" de por.traineddata
 
-        // 4. Criar o Construtor (o código que roda quando a classe é criada)
-        public AnprProcessor()
+        // 6. O Construtor agora "pede" a IVideoSource
+        public AnprProcessor(IVideoSource videoSource) // <-- MUDANÇA AQUI
         {
             Console.WriteLine("[INFO] Carregando motores de IA...");
+            _videoSource = videoSource; // <-- Salva a referência dos "olhos"
 
-            // 5. Carregar o Modelo YOLO (ONNX)
+            // 7. Carregar o Modelo YOLO (ONNX) - (código antigo, sem mudanças)
             try
             {
                 var options = new SessionOptions();
-                // (Opcional, mas bom) Otimiza para a CPU
                 options.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL;
 
                 _yoloSession = new InferenceSession(YoloModelPath, options);
@@ -42,14 +48,12 @@ namespace ANPR.Core
                 throw;
             }
 
-            // 6. Carregar o Motor Tesseract (OCR)
+            // 8. Carregar o Motor Tesseract (OCR) - (código antigo, sem mudanças)
             try
             {
-                // Verifica se a pasta tessdata existe
                 if (!Directory.Exists(TessDataPath))
                     throw new DirectoryNotFoundException($"Pasta Tesseract não encontrada em '{TessDataPath}'");
 
-                // O TesseractEngine espera a PASTA, não o arquivo
                 _tesseractEngine = new TesseractEngine(TessDataPath, TessLang, EngineMode.Default);
                 Console.WriteLine("[INFO] Motor Tesseract (OCR) carregado com sucesso.");
             }
@@ -62,6 +66,15 @@ namespace ANPR.Core
             }
 
             Console.WriteLine("[INFO] Motores carregados. Processador pronto.");
+        }
+
+        // 9. NOVO MÉTODO: Dispose (para corrigir os "LEAKs"!)
+        // Este método é chamado automaticamente pelo 'using' no Program.cs
+        public void Dispose()
+        {
+            Console.WriteLine("[INFO] Desligando motores de IA...");
+            _tesseractEngine?.Dispose();
+            _yoloSession?.Dispose();
         }
     }
 }
