@@ -1,7 +1,103 @@
 ﻿@page "/"
+@using ANPR.Core.Services
+@using ANPR.Shared.Models
+@inject AnprProcessor Processor
+@implements IDisposable
 
-<PageTitle>Home</PageTitle>
+<PageTitle>ANPR Dashboard</PageTitle>
 
-<h1>Hello, world!</h1>
+<div class="container-fluid">
+    <div class="row">
+        <div class="col-md-8">
+            <div class="card">
+                <div class="card-header bg-dark text-white">
+                    🎥 Câmera Ao Vivo
+                </div>
+                <div class="card-body text-center bg-black p-0">
+                    @if (CurrentFrame != null)
+                    {
+                        <img src="data:image/jpeg;base64,@CurrentFrame" style="max-width: 100%; height: auto;" />
+                    }
+                    else
+                    {
+                        <div class="p-5 text-white">Carregando Câmera...</div>
+                    }
+                </div>
+            </div>
+        </div>
 
-Welcome to your new app.
+        <div class="col-md-4">
+            <div class="card mb-3">
+                <div class="card-header">🔍 Última Leitura</div>
+                <div class="card-body text-center">
+                    <h2 class="display-4 fw-bold @StatusColor">@PlateText</h2>
+                    <hr />
+                    <h4>@VehicleInfo</h4>
+                    <div class="alert @AlertClass mt-3">
+                        @AccessMessage
+                    </div>
+                </div>
+            </div>
+
+            <div class="d-grid gap-2">
+                <button class="btn btn-primary" type="button">Gerenciar Veículos</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    // Variáveis de Estado da Tela
+    private string CurrentFrame;
+    private string PlateText = "---";
+    private string VehicleInfo = "Aguardando...";
+    private string AccessMessage = "Sistema Pronto";
+    private string StatusColor = "text-secondary";
+    private string AlertClass = "alert-secondary";
+
+    protected override void OnInitialized()
+    {
+        // Inscreve-se para receber novidades do motor
+        Processor.OnAnprProcessed += UpdateScreen;
+    }
+
+    private void UpdateScreen(AnprWebResult result)
+    {
+        // O evento vem de uma Thread de fundo, precisamos avisar o Blazor
+        // para atualizar a UI na Thread principal.
+        InvokeAsync(() =>
+        {
+            // Converter bytes da imagem para String Base64 para o HTML
+            if (result.FrameImage != null)
+                CurrentFrame = Convert.ToBase64String(result.FrameImage);
+
+            // Atualizar textos se houver leitura
+            if (!string.IsNullOrEmpty(result.PlateText) && result.PlateText != "---")
+            {
+                PlateText = result.PlateText;
+                VehicleInfo = result.VehicleInfo;
+                AccessMessage = result.Message;
+
+                if (result.IsAuthorized)
+                {
+                    StatusColor = "text-success"; // Verde
+                    AlertClass = "alert-success";
+                }
+                else
+                {
+                    StatusColor = "text-danger"; // Vermelho
+                    AlertClass = "alert-danger";
+                }
+            }
+
+            // Avisa o Blazor que mudou algo
+            StateHasChanged();
+        });
+    }
+
+    public void Dispose()
+    {
+        // Se sair da página, para de ouvir para não dar erro
+        Processor.OnAnprProcessed -= UpdateScreen;
+    }
+}

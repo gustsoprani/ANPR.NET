@@ -2,33 +2,30 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Threading.Tasks;
 using OpenCvSharp;
 using ANPR.Shared.Models;
 using ANPR.Shared.Interfaces;
 
 namespace ANPR.Core.Services
 {
-    /// <summary>
-    /// Processador principal do ANPR
-    /// Implementa a arquitetura "Gatekeeper" com filtro temporal
-    /// </summary>
     public class AnprProcessor : IDisposable
     {
+        // O SITE ESCUTA ESTE EVENTO
+        public event Action<AnprWebResult> OnAnprProcessed;
+
         private readonly IVideoSource _videoSource;
         private readonly IPlateDetector _yoloDetector;
         private readonly IOcrEngine _ocrEngine;
         private readonly IAccessDatabase _database;
 
-        // Configurações de otimização
-        private readonly int _framesPerDetection;      // YOLO a cada N frames
-        private readonly int _framesToConfirm;         // Quantos frames confirmar detecção
-        private readonly int _maxMemoryMb;             // Limite de memória
+        private readonly int _framesPerDetection;
+        private readonly int _framesToConfirm;
+        private readonly int _maxMemoryMb;
 
-        // Estado de rastreamento
         private Dictionary<int, DetectionTracker> _activeDetections;
         private Dictionary<string, DateTime> _recentAccesses = new Dictionary<string, DateTime>();
         private int _frameCounter;
-        private long _lastMemoryCheck;
 
         public AnprProcessor(
             IVideoSource videoSource,
@@ -50,60 +47,59 @@ namespace ANPR.Core.Services
 
             _activeDetections = new Dictionary<int, DetectionTracker>();
             _frameCounter = 0;
-            _lastMemoryCheck = 0;
-
-            Console.WriteLine($"⚙️ AnprProcessor iniciado com configuração:");
-            Console.WriteLine($"   YOLO a cada: {framesPerDetection} frames");
-            Console.WriteLine($"   Confirmação após: {framesToConfirm} frames");
-            Console.WriteLine($"   Limite memória: {maxMemoryMb}MB");
         }
 
-        /// <summary>
-        /// Inicia o processamento de vídeo
-        /// Este é o loop principal
-        /// </summary>
-        public void Start()
+        // --- MÉTODO PRINCIPAL (LIVRE DE JANELAS) ---
+        public async Task StartAsync()
         {
-            Console.WriteLine("🚀 Iniciando processamento ANPR...");
-            var window = new Window("ANPR - Controle de Acesso");
-            var stopwatch = Stopwatch.StartNew();
+            Console.WriteLine("🚀 Processador ANPR Web Iniciado (Background).");
 
             try
             {
                 while (_videoSource.IsAvailable)
                 {
-                    Mat frame = _videoSource.GetNextFrame();
-                    if (frame.Empty()) break;
+                    // 1. Captura Frame
+                    using Mat frame = _videoSource.GetNextFrame();
+                    if (frame.Empty())
+                    {
+                        await Task.Delay(100);
+                        continue;
+                    }
 
-                    // =========================================================
-                    // OTIMIZAÇÃO YOLO: Isso já faz ele rodar a cada 5 frames!
-                    // Se _framesPerDetection for 5, ele entra aqui no frame 0, 5, 10...
-                    // =========================================================
+                    // 2. Prepara objeto para o Site
+                    var webResult = new AnprWebResult
+                    {
+                        Timestamp = DateTime.Now,
+                        PlateText = "---",
+                        Message = "Monitorando...",
+                        IsAuthorized = false,
+                        VehicleInfo = ""
+                    };
+
+                    // 3. Detecção YOLO (A cada N frames)
                     List<PlateDetection> detections = new List<PlateDetection>();
                     if (_frameCounter % _framesPerDetection == 0)
                     {
                         detections = _yoloDetector.Detect(frame);
-                        // Console.WriteLine($"[Frame {_frameCounter}] YOLO executado"); // Descomente para testar
                     }
 
-                    // Atualiza a lógica de rastreamento (mantém os trackers vivos nos frames vazios)
+                    // 4. Rastreamento
                     ProcessDetections(detections);
 
-                    // Seleciona apenas placas confirmadas (vistas N vezes seguidas)
+                    // 5. Verifica Rastreadores Confirmados
                     var confirmedDetections = _activeDetections
                         .Where(x => x.Value.ConfirmationCount >= _framesToConfirm)
                         .ToList();
 
                     foreach (var confirmed in confirmedDetections)
                     {
-                        // Se já processamos este tracker específico, ignora
                         if (confirmed.Value.AlreadyProcessed) continue;
 
+                        // Recorte da Placa
                         var rect = confirmed.Value.LastDetection.BoundingBox;
+                        int expandX = (int)(rect.Width * 0.15);
+                        int expandY = (int)(rect.Height * 0.15);
 
-                        // Expansão de segurança (15%)
-                        int expandX = (int)(rect.Width * 0.01);
-                        int expandY = (int)(rect.Height * 0.01);
                         var expanded = new Rect(
                             Math.Max(rect.X - expandX, 0),
                             Math.Max(rect.Y - expandY, 0),
@@ -111,216 +107,133 @@ namespace ANPR.Core.Services
                             Math.Min(rect.Height + 2 * expandY, frame.Height - rect.Y + expandY)
                         );
 
-                        using (var plateRoi = new Mat(frame, expanded))
+                        if (expanded.Width > 0 && expanded.Height > 0)
                         {
-                            // Marca o tracker como processado para não ler o mesmo tracker no próximo frame
-                            confirmed.Value.AlreadyProcessed = true;
-
-                            var ocrResult = _ocrEngine.ReadPlate(plateRoi);
-
-                            if (ocrResult.IsValid)
+                            using (var plateRoi = new Mat(frame, expanded))
                             {
-                                // 1. BUSCA NO BANCO PRIMEIRO (Para saber quem é o carro real)
-                                var vehicle = _database.FindVehicle(ocrResult.ProcessedText);
+                                confirmed.Value.AlreadyProcessed = true;
+                                var ocrResult = _ocrEngine.ReadPlate(plateRoi);
 
-                                // 2. DEFINE A CHAVE DE COOLDOWN INTELIGENTE
-                                // Se achou o veículo, usa a placa OFICIAL do banco (ex: GTT0F37).
-                                // Se não achou, usa o texto lido mesmo (ex: GTT6F57).
-                                string cooldownKey = vehicle != null ? vehicle.PlateNumber : ocrResult.ProcessedText;
-
-                                // 3. VERIFICA O COOLDOWN USANDO A CHAVE UNIFICADA
-                                if (_recentAccesses.ContainsKey(cooldownKey))
+                                if (ocrResult.IsValid)
                                 {
-                                    var lastTime = _recentAccesses[cooldownKey];
-                                    if ((DateTime.Now - lastTime).TotalSeconds < 15) // 15 Segundos
+                                    // Verifica Banco e Cooldown
+                                    var vehicle = _database.FindVehicle(ocrResult.ProcessedText);
+                                    string cooldownKey = vehicle != null ? vehicle.PlateNumber : ocrResult.ProcessedText;
+
+                                    if (_recentAccesses.ContainsKey(cooldownKey))
                                     {
-                                        // Opcional: Mostrar qual placa foi "normalizada"
-                                        // Console.WriteLine($"⏳ Cooldown: '{ocrResult.ProcessedText}' vinculado a {cooldownKey} (Aguarde 15s).");
-
-                                        // Apenas remove o tracker e continua
-                                        _activeDetections.Remove(confirmed.Key);
-                                        continue;
+                                        var lastTime = _recentAccesses[cooldownKey];
+                                        if ((DateTime.Now - lastTime).TotalSeconds < 15)
+                                        {
+                                            _activeDetections.Remove(confirmed.Key);
+                                            continue; // Pula se estiver em cooldown
+                                        }
                                     }
+
+                                    // Atualiza Cooldown e Log
+                                    _recentAccesses[cooldownKey] = DateTime.Now;
+
+                                    var accessResult = new AccessControlResult
+                                    {
+                                        PlateText = ocrResult.ProcessedText,
+                                        AccessTime = DateTime.Now,
+                                        IsAuthorized = vehicle != null,
+                                        VehicleInfo = vehicle != null ? $"{vehicle.OwnerName} - {vehicle.VehicleModel}" : "Desconhecido",
+                                        Reason = vehicle != null ? "Placa cadastrada" : "Placa não autorizada",
+                                        MatchConfidence = vehicle != null ? 100 : 0
+                                    };
+
+                                    _database.LogAccess(accessResult);
+
+                                    // === ATUALIZA DADOS PARA O SITE ===
+                                    webResult.PlateText = accessResult.PlateText;
+                                    webResult.VehicleInfo = accessResult.VehicleInfo;
+                                    webResult.Message = accessResult.Reason;
+                                    webResult.IsAuthorized = accessResult.IsAuthorized;
+
+                                    // Envia a imagem recortada da placa também (opcional)
+                                    webResult.DebugImage = plateRoi.ToBytes(".jpg");
                                 }
-
-                                // 4. ATUALIZA O COOLDOWN
-                                _recentAccesses[cooldownKey] = DateTime.Now;
-
-                                // 5. REGISTRA O ACESSO
-                                var accessResult = new AccessControlResult
-                                {
-                                    PlateText = ocrResult.ProcessedText, // O que foi lido
-                                    AccessTime = DateTime.Now,
-                                    IsAuthorized = vehicle != null,
-                                    VehicleInfo = vehicle != null ? $"{vehicle.OwnerName} - {vehicle.VehicleModel}" : "Desconhecido",
-                                    Reason = vehicle != null ? "Placa cadastrada" : "Placa não autorizada",
-                                    MatchConfidence = vehicle != null ? 100 : 0
-                                };
-
-                                Console.WriteLine(accessResult.ToString());
-                                _database.LogAccess(accessResult);
-                            }
-                            else
-                            {
-                                // Se o OCR falhou, talvez queiramos tentar de novo no próximo frame.
-                                // Nesse caso, NÃO removemos o tracker e NÃO marcamos como AlreadyProcessed?
-                                // Depende da estratégia. Aqui vou apenas logar.
-                                Console.WriteLine($"⚠️ OCR Inválido. Lido: '{ocrResult.RawText}' -> Processado: '{ocrResult.ProcessedText}'");
                             }
                         }
-
-                        // Sempre remove o tracker após uma tentativa de leitura (com sucesso ou cooldown)
-                        // Isso força o sistema a detectar "do zero" se o carro se mover.
                         _activeDetections.Remove(confirmed.Key);
                     }
 
+                    // 6. Desenha retângulos na imagem principal
                     RenderFrame(frame, detections);
-                    window.ShowImage(frame);
 
-                    // Limpeza de memória periódica (A cada 30 frames)
-                    if (_frameCounter % 30 == 0)
-                    {
-                        CheckMemory(); // A limpeza do dicionário vai aqui dentro!
-                    }
+                    // 7. ENVIA PARA O SITE (Converter para JPG)
+                    webResult.FrameImage = frame.ToBytes(".jpg");
 
-                    if (Cv2.WaitKey(1) == 27) break;
+                    // Dispara o evento!
+                    OnAnprProcessed?.Invoke(webResult);
+
+                    // 8. Gestão de Memória e Loop
+                    if (_frameCounter % 30 == 0) CheckMemory();
                     _frameCounter++;
-                    frame.Dispose();
+
+                    // Pausa assíncrona para não travar a CPU (aprox 30 FPS)
+                    await Task.Delay(33);
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"❌ Erro: {ex.Message}");
-            }
-            finally
-            {
-                window?.Dispose();
+                Console.WriteLine($"❌ Erro Fatal no Processador: {ex.Message}");
             }
         }
 
-        /// <summary>
-        /// Processa detecções e atualiza rastreadores temporais
-        /// </summary>
+        // --- MÉTODOS AUXILIARES (Mantidos para funcionar a lógica) ---
+
         private void ProcessDetections(List<PlateDetection> detections)
         {
-            // Incrementar counter de todos os rastreadores ativos
-            foreach (var tracker in _activeDetections.Values)
-            {
-                tracker.FramesSinceLastDetection++;
-            }
+            foreach (var tracker in _activeDetections.Values) tracker.FramesSinceLastDetection++;
 
-            // Remover rastreadores que não viram mais placas (timeout)
-            var toRemove = _activeDetections
-                .Where(x => x.Value.FramesSinceLastDetection > 10)
-                .Select(x => x.Key)
-                .ToList();
+            var toRemove = _activeDetections.Where(x => x.Value.FramesSinceLastDetection > 10).Select(x => x.Key).ToList();
+            foreach (var key in toRemove) _activeDetections.Remove(key);
 
-            foreach (var key in toRemove)
-            {
-                _activeDetections.Remove(key);
-                Console.WriteLine($"⏱️ Rastreador {key} expirado (sem detecção por 10 frames)");
-            }
-
-            // Para cada detecção atual, tentar associar com rastreador existente
             foreach (var det in detections)
             {
                 bool found = false;
-
                 foreach (var tracker in _activeDetections.Values)
                 {
                     if (IsNearby(det.BoundingBox, tracker.LastDetection.BoundingBox))
                     {
-                        // Incrementar counter de confirmação
                         tracker.ConfirmationCount++;
-                        Console.WriteLine($"🔍 Rastreador ativo: Confirmação {tracker.ConfirmationCount}/{_framesToConfirm}");
                         tracker.LastDetection = det;
                         tracker.FramesSinceLastDetection = 0;
                         found = true;
                         break;
                     }
                 }
-
-                // Se não encontrou rastreador, criar novo
                 if (!found)
                 {
                     int newId = _activeDetections.Keys.Count + 1;
-                    _activeDetections[newId] = new DetectionTracker
-                    {
-                        LastDetection = det,
-                        ConfirmationCount = 1,
-                        FramesSinceLastDetection = 0
-                    };
-                    Console.WriteLine($"🆕 Novo rastreador {newId} criado");
+                    _activeDetections[newId] = new DetectionTracker { LastDetection = det, ConfirmationCount = 1 };
                 }
             }
         }
 
-        /// <summary>
-        /// Verifica se dois retângulos estão próximos (mesmo objeto)
-        /// </summary>
         private bool IsNearby(Rect rect1, Rect rect2, int tolerance = 50)
         {
-            return Math.Abs(rect1.X - rect2.X) < tolerance &&
-                   Math.Abs(rect1.Y - rect2.Y) < tolerance &&
-                   Math.Abs(rect1.Width - rect2.Width) < tolerance &&
-                   Math.Abs(rect1.Height - rect2.Height) < tolerance;
+            return Math.Abs(rect1.X - rect2.X) < tolerance && Math.Abs(rect1.Y - rect2.Y) < tolerance;
         }
 
-        /// <summary>
-        /// Renderiza visualizações no frame
-        /// </summary>
         private void RenderFrame(Mat frame, List<PlateDetection> detections)
         {
-            // Desenhar detecções
             foreach (var det in detections)
             {
                 Cv2.Rectangle(frame, det.BoundingBox, Scalar.Yellow, 2);
-                Cv2.PutText(frame, $"Detectando {det.Confidence:P1}",
-                    new Point(det.BoundingBox.X, det.BoundingBox.Y - 5),
-                    HersheyFonts.HersheySimplex, 0.5, Scalar.Yellow, 1);
             }
-
-            // Desenhar rastreadores confirmados
-            foreach (var tracker in _activeDetections.Where(x => x.Value.ConfirmationCount >= _framesToConfirm))
-            {
-                var det = tracker.Value.LastDetection;
-                Cv2.Rectangle(frame, det.BoundingBox, Scalar.Green, 3);
-                Cv2.PutText(frame, $"Confirmado {tracker.Value.ConfirmationCount}/{_framesToConfirm}",
-                    new Point(det.BoundingBox.X, det.BoundingBox.Y - 5),
-                    HersheyFonts.HersheySimplex, 0.6, Scalar.Green, 2);
-            }
-
-            // Info no topo
-            Cv2.PutText(frame, $"Frame: {_frameCounter} | Rastreadores: {_activeDetections.Count}",
-                new Point(10, 30), HersheyFonts.HersheySimplex, 0.7, Scalar.Cyan, 2);
         }
 
-        /// <summary>
-        /// Verifica uso de memória
-        /// </summary>
         private void CheckMemory()
         {
-            // 1. Limpeza do Dicionário de Cooldown [NOVO]
-            // Removemos placas que não são vistas há mais de 1 minuto para liberar memória
-            var chavesExpiradas = _recentAccesses
-                .Where(pair => (DateTime.Now - pair.Value).TotalSeconds > 60)
-                .Select(pair => pair.Key)
-                .ToList();
+            var chavesExpiradas = _recentAccesses.Where(p => (DateTime.Now - p.Value).TotalSeconds > 60).Select(p => p.Key).ToList();
+            foreach (var k in chavesExpiradas) _recentAccesses.Remove(k);
 
-            foreach (var chave in chavesExpiradas)
-            {
-                _recentAccesses.Remove(chave);
-            }
-
-            // Se removeu algo, avisa no log (opcional, bom para debug)
-            if (chavesExpiradas.Count > 0)
-                Console.WriteLine($"🧹 Limpeza: {chavesExpiradas.Count} placas removidas do cache de cooldown.");
-
-            // 2. Verificação de Memória RAM (Código original)
             long memoryMb = GC.GetTotalMemory(false) / (1024 * 1024);
             if (memoryMb > _maxMemoryMb * 0.9)
             {
-                Console.WriteLine($"⚠️ Memória cheia ({memoryMb}MB). Coletando lixo...");
                 GC.Collect();
                 GC.WaitForPendingFinalizers();
             }
@@ -334,9 +247,6 @@ namespace ANPR.Core.Services
             _database?.Dispose();
         }
 
-        /// <summary>
-        /// Classe interna para rastrear detecções
-        /// </summary>
         private class DetectionTracker
         {
             public PlateDetection LastDetection { get; set; }

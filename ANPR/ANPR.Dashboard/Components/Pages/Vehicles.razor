@@ -1,0 +1,128 @@
+﻿@page "/vehicles"
+@using ANPR.Shared.Models
+@using ANPR.Shared.Interfaces
+@inject IAccessDatabase DatabaseService
+@inject NavigationManager Navigation
+
+<PageTitle>Gerenciar Veículos</PageTitle>
+
+<div class="container mt-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h1>🚗 Veículos Autorizados</h1>
+        <button class="btn btn-success" @onclick="ShowAddModal">+ Novo Veículo</button>
+    </div>
+
+    <div class="card shadow-sm">
+        <div class="card-body p-0">
+            <table class="table table-striped table-hover mb-0">
+                <thead class="table-dark">
+                    <tr>
+                        <th>Placa</th>
+                        <th>Proprietário</th>
+                        <th>Modelo</th>
+                        <th>Cor</th>
+                        <th>Ações</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var vehicle in VehicleList)
+                    {
+                        <tr>
+                            <td class="fw-bold">@vehicle.PlateNumber</td>
+                            <td>@vehicle.OwnerName</td>
+                            <td>@vehicle.VehicleModel</td>
+                            <td>@vehicle.VehicleColor</td>
+                            <td>
+                                <button class="btn btn-danger btn-sm" @onclick="() => RemoveVehicle(vehicle.PlateNumber)">
+                                    🗑️ Remover
+                                </button>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    @if (IsAdding)
+    {
+        <div class="card mt-4 border-success">
+            <div class="card-header bg-success text-white">Adicionar Novo Veículo</div>
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-md-3">
+                        <label>Placa (ex: ABC1D23)</label>
+                        <input class="form-control" @bind="NewVehicle.PlateNumber" placeholder="PLACA" />
+                    </div>
+                    <div class="col-md-3">
+                        <label>Proprietário</label>
+                        <input class="form-control" @bind="NewVehicle.OwnerName" placeholder="Nome" />
+                    </div>
+                    <div class="col-md-3">
+                        <label>Modelo</label>
+                        <input class="form-control" @bind="NewVehicle.VehicleModel" placeholder="Ex: Civic" />
+                    </div>
+                    <div class="col-md-3">
+                        <label>Cor</label>
+                        <input class="form-control" @bind="NewVehicle.VehicleColor" placeholder="Ex: Prata" />
+                    </div>
+                </div>
+                <div class="mt-3">
+                    <button class="btn btn-primary" @onclick="SaveVehicle">Salvar</button>
+                    <button class="btn btn-secondary" @onclick="() => IsAdding = false">Cancelar</button>
+                </div>
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    // MUDANÇA 2: Renomeado de Vehicles para VehicleList para evitar conflito com a classe
+    private List<DatabaseVehicle> VehicleList = new();
+
+    private DatabaseVehicle NewVehicle = new();
+    private bool IsAdding = false;
+
+    protected override void OnInitialized()
+    {
+        LoadVehicles();
+    }
+
+    private void LoadVehicles()
+    {
+        // MUDANÇA 3: Atualiza a lista com o novo nome
+        VehicleList = DatabaseService.GetAllVehicles();
+    }
+
+    private void ShowAddModal()
+    {
+        NewVehicle = new DatabaseVehicle();
+        IsAdding = true;
+    }
+
+    private void SaveVehicle()
+    {
+        if (!string.IsNullOrWhiteSpace(NewVehicle.PlateNumber))
+        {
+            NewVehicle.PlateNumber = NewVehicle.PlateNumber.ToUpper().Replace("-", "").Trim();
+            NewVehicle.IsActive = true;
+
+            try
+            {
+                DatabaseService.AddVehicle(NewVehicle);
+                IsAdding = false;
+                LoadVehicles();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Erro ao salvar: {ex.Message}");
+            }
+        }
+    }
+
+    private void RemoveVehicle(string plate)
+    {
+        DatabaseService.RemoveVehicle(plate);
+        LoadVehicles();
+    }
+}

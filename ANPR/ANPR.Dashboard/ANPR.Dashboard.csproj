@@ -7,7 +7,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\ANPR.Shared\ANPR.Shared.csproj" />
+	  <ProjectReference Include="..\ANPR.Shared\ANPR.Shared.csproj" />
+	  <ProjectReference Include="..\ANPR.Core\ANPR.Core.csproj" />
   </ItemGroup>
 
 </Project>
