@@ -102,8 +102,8 @@ namespace ANPR.Core.Services
                         var rect = confirmed.Value.LastDetection.BoundingBox;
 
                         // Expansão de segurança (15%)
-                        int expandX = (int)(rect.Width * 0.05);
-                        int expandY = (int)(rect.Height * 0.05);
+                        int expandX = (int)(rect.Width * 0.01);
+                        int expandY = (int)(rect.Height * 0.01);
                         var expanded = new Rect(
                             Math.Max(rect.X - expandX, 0),
                             Math.Max(rect.Y - expandY, 0),
@@ -120,32 +120,36 @@ namespace ANPR.Core.Services
 
                             if (ocrResult.IsValid)
                             {
-                                // =====================================================
-                                // [NOVO] LÓGICA DE COOLDOWN (ANTI-SPAM)
-                                // =====================================================
-                                if (_recentAccesses.ContainsKey(ocrResult.ProcessedText))
-                                {
-                                    var lastTime = _recentAccesses[ocrResult.ProcessedText];
-                                    if ((DateTime.Now - lastTime).TotalSeconds < 15) // 15 Segundos de espera
-                                    {
-                                        Console.WriteLine($"⏳ Cooldown: Placa {ocrResult.ProcessedText} ignorada (Aguarde 15s).");
+                                // 1. BUSCA NO BANCO PRIMEIRO (Para saber quem é o carro real)
+                                var vehicle = _database.FindVehicle(ocrResult.ProcessedText);
 
-                                        // Removemos o tracker para liberar a visão, mas não abrimos o portão
+                                // 2. DEFINE A CHAVE DE COOLDOWN INTELIGENTE
+                                // Se achou o veículo, usa a placa OFICIAL do banco (ex: GTT0F37).
+                                // Se não achou, usa o texto lido mesmo (ex: GTT6F57).
+                                string cooldownKey = vehicle != null ? vehicle.PlateNumber : ocrResult.ProcessedText;
+
+                                // 3. VERIFICA O COOLDOWN USANDO A CHAVE UNIFICADA
+                                if (_recentAccesses.ContainsKey(cooldownKey))
+                                {
+                                    var lastTime = _recentAccesses[cooldownKey];
+                                    if ((DateTime.Now - lastTime).TotalSeconds < 15) // 15 Segundos
+                                    {
+                                        // Opcional: Mostrar qual placa foi "normalizada"
+                                        // Console.WriteLine($"⏳ Cooldown: '{ocrResult.ProcessedText}' vinculado a {cooldownKey} (Aguarde 15s).");
+
+                                        // Apenas remove o tracker e continua
                                         _activeDetections.Remove(confirmed.Key);
                                         continue;
                                     }
                                 }
 
-                                // Atualiza o horário do último acesso desta placa
-                                _recentAccesses[ocrResult.ProcessedText] = DateTime.Now;
-                                // =====================================================
+                                // 4. ATUALIZA O COOLDOWN
+                                _recentAccesses[cooldownKey] = DateTime.Now;
 
-                                // Busca no banco e libera acesso
-                                var vehicle = _database.FindVehicle(ocrResult.ProcessedText);
-
+                                // 5. REGISTRA O ACESSO
                                 var accessResult = new AccessControlResult
                                 {
-                                    PlateText = ocrResult.ProcessedText,
+                                    PlateText = ocrResult.ProcessedText, // O que foi lido
                                     AccessTime = DateTime.Now,
                                     IsAuthorized = vehicle != null,
                                     VehicleInfo = vehicle != null ? $"{vehicle.OwnerName} - {vehicle.VehicleModel}" : "Desconhecido",

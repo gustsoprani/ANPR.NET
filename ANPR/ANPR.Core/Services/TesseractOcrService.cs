@@ -30,7 +30,7 @@ namespace ANPR.Core.Services
                 _tesseractEngine = new TesseractEngine(tessDataPath, "por", EngineMode.LstmOnly);
 
                 // Configurações globais para restringir o reconhecimento
-                //_tesseractEngine.SetVariable("tessedit_char_whitelist", WHITELIST);
+                _tesseractEngine.SetVariable("tessedit_char_whitelist", WHITELIST);
                 _tesseractEngine.SetVariable("user_defined_dpi", "70"); // Ajuda no redimensionamento interno
                 _tesseractEngine.SetVariable("tessedit_pageseg_mode", ((int)PageSegMode.SingleBlock).ToString());
 
@@ -72,7 +72,11 @@ namespace ANPR.Core.Services
                 {
                     using (var page = _tesseractEngine.Process(pix, PageSegMode.SingleBlock))
                     {
-                        rawText = page.GetText().Trim().ToUpper().Replace(" ", "");
+                        rawText = page.GetText().Trim().ToUpper()
+                            .Replace(" ", "")
+                            .Replace("\n", "")
+                            .Replace("\r", "")
+                            .Replace("\t", "");
                         confidence = page.GetMeanConfidence();
                     }
                 }
@@ -148,49 +152,93 @@ namespace ANPR.Core.Services
         /// </summary>
         public string PostProcess(string rawText)
         {
-            // 1. Limpeza básica
-            string cleaned = new string(rawText.Where(c => WHITELIST.Contains(c)).ToArray());
+            // 1. Limpeza
+            string cleaned = new string(rawText.Where(c => WHITELIST.Contains(c) || c == '|').ToArray());
 
-            // 2. Padronizar para 7 caracteres
-            if (cleaned.Length > 7) cleaned = cleaned.Substring(0, 7);
+            // 2. SMART SHIFT V3 (Mais tolerante)
+            if (cleaned.Length >= 8)
+            {
+                char firstChar = cleaned[0];
+
+                char charAt3 = cleaned[3];
+                char charAt4 = cleaned[4];
+
+                // [AJUSTE] Adicionei 'G' e 'b' aqui. 
+                // Às vezes o 6 vira G, ou o 0 vira G, ou 8 vira B/b.
+                // Se a posição 4 tiver um 'G', assumimos que é um número mal lido e ativamos o Shift.
+                bool index4IsDigitLike = char.IsDigit(charAt4) || "ODQBSZGb".Contains(charAt4);
+
+                bool index3IsLetterLike = char.IsLetter(charAt3) || "015".Contains(charAt3);
+
+                bool isShifted = false;
+
+                // Aceita K também como borda (apareceu no seu log "KETTOF...")
+                if ("LI|1K".Contains(firstChar))
+                {
+                    if (index3IsLetterLike && index4IsDigitLike)
+                    {
+                        isShifted = true;
+                    }
+                }
+
+                if (isShifted)
+                {
+                    Console.WriteLine($"🔧 Smart Shift: Removido '{firstChar}' inicial.");
+                    cleaned = cleaned.Substring(1, 7);
+                }
+                else
+                {
+                    cleaned = cleaned.Substring(0, 7);
+                }
+            }
+            else if (cleaned.Length > 7)
+            {
+                cleaned = cleaned.Substring(0, 7);
+            }
+
             if (cleaned.Length < 7) return string.Empty;
 
             char[] chars = cleaned.ToCharArray();
 
-            // 3. Correções posicionais (Mercosul: LLL#L##)
+            // 3. Correções posicionais
             for (int i = 0; i < chars.Length; i++)
             {
-                // === POSIÇÕES QUE DEVEM SER LETRAS (0, 1, 2, 4) ===
+                // === LETRAS ===
                 if (i == 0 || i == 1 || i == 2 || i == 4)
                 {
-                    if (char.IsDigit(chars[i]))
+                    if (char.IsDigit(chars[i]) || chars[i] == '|')
                     {
-                        // Converte NÚMEROS intrusos em LETRAS prováveis
                         if (chars[i] == '0') chars[i] = 'O';
-                        else if (chars[i] == '1') chars[i] = 'I';
-                        else if (chars[i] == '2') chars[i] = 'Z'; // Comum
+                        else if (chars[i] == '1' || chars[i] == '|') chars[i] = 'I';
+                        else if (chars[i] == '2') chars[i] = 'Z';
                         else if (chars[i] == '4') chars[i] = 'A';
                         else if (chars[i] == '5') chars[i] = 'S';
-                        else if (chars[i] == '6') chars[i] = 'G'; // <--- A CORREÇÃO CRUCIAL
+                        else if (chars[i] == '6') chars[i] = 'G';
                         else if (chars[i] == '7') chars[i] = 'Z';
                         else if (chars[i] == '8') chars[i] = 'B';
-                        else if (chars[i] == '|') chars[i] = 'I';
+                    }
+                    // [NOVO] Correção específica: E -> G (Muito comum)
+                    else if (chars[i] == 'E' || chars[i] == 'C')
+                    {
+                        // Se for Mercosul, G é muito mais comum que E em posições confusas
+                        // Mas cuidado para não trocar placas reais com E. 
+                        // Deixe o Fuzzy Match lidar com isso ou descomente abaixo se o erro E->G for frequente:
+                        // chars[i] = 'G'; 
                     }
                 }
-                // === POSIÇÕES QUE DEVEM SER NÚMEROS (3, 5, 6) ===
+                // === NÚMEROS ===
                 else
                 {
-                    if (char.IsLetter(chars[i]))
+                    if (char.IsLetter(chars[i]) || chars[i] == '|')
                     {
-                        // Converte LETRAS intrusas em NÚMEROS prováveis
                         if (chars[i] == 'O' || chars[i] == 'Q' || chars[i] == 'D') chars[i] = '0';
-                        else if (chars[i] == 'I' || chars[i] == 'L') chars[i] = '1';
-                        else if (chars[i] == 'Z') chars[i] = '2'; // Z muitas vezes é 2
+                        else if (chars[i] == 'U') chars[i] = '0';
+                        else if (chars[i] == 'I' || chars[i] == 'L' || chars[i] == '|') chars[i] = '1';
+                        else if (chars[i] == 'Z') chars[i] = '2';
                         else if (chars[i] == 'A') chars[i] = '4';
                         else if (chars[i] == 'S') chars[i] = '5';
-                        else if (chars[i] == 'G') chars[i] = '6';
+                        else if (chars[i] == 'G' || chars[i] == 'b') chars[i] = '6'; // G ou b vira 6
                         else if (chars[i] == 'B') chars[i] = '8';
-                        else if (chars[i] == '|') chars[i] = '1';
                     }
                 }
             }

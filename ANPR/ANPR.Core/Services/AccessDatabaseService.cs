@@ -61,6 +61,17 @@ namespace ANPR.Core.Services
                 RegisteredDate = DateTime.Now
             });
 
+            _vehicles.Add(new DatabaseVehicle
+            {
+                Id = 4,
+                PlateNumber = "GTT0F37",
+                OwnerName = "Carlos Costa",
+                VehicleModel = "Honda Civic",
+                VehicleColor = "Prata",
+                IsActive = true,
+                RegisteredDate = DateTime.Now
+            });
+
             Console.WriteLine($"📦 {_vehicles.Count} veículos carregados do banco de dados");
         }
 
