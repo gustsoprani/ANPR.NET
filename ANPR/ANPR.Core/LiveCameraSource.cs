@@ -1,40 +1,50 @@
-﻿// No ANPR.Core/LiveCameraSource.cs
-
-using ANPR.Shared; // <-- Precisamos do nosso contrato!
+﻿using ANPR.Shared.Interfaces;
 using OpenCvSharp;
+using System;
 
 namespace ANPR.Core
 {
-    // Esta classe "herda" (assina) o contrato IVideoSource
     public class LiveCameraSource : IVideoSource
     {
         private readonly int _cameraIndex;
         private VideoCapture? _capture;
+        private int _frameCount = 0;
 
-        // "cameraIndex = 0" significa "pegar a primeira câmera"
         public LiveCameraSource(int cameraIndex = 0)
         {
             _cameraIndex = cameraIndex;
+            _capture = new VideoCapture(_cameraIndex);
         }
 
-        public bool Open()
-        {
-            _capture = new VideoCapture(_cameraIndex);
-            return _capture.IsOpened();
-        }
+        // --- Implementação da Interface IVideoSource ---
+
+        public bool IsAvailable => _capture?.IsOpened() ?? false;
+
+        public int FrameCount => _frameCount;
+
+        // Câmera ao vivo não tem "Total de Frames" fixo, retornamos -1
+        public int TotalFrames => -1;
+
+        public double CurrentFps => _capture != null ? _capture.Get(VideoCaptureProperties.Fps) : 0;
 
         public Mat GetNextFrame()
         {
+            if (_capture == null || !_capture.IsOpened())
+                return new Mat();
+
             var frame = new Mat();
-            _capture?.Read(frame); // Lê um frame da câmera
+            _capture.Read(frame);
+
+            if (!frame.Empty())
+            {
+                _frameCount++;
+            }
+
             return frame;
         }
 
-        public bool IsOpened() => _capture?.IsOpened() ?? false;
-
         public void Dispose()
         {
-            // Limpa os recursos da câmera
             _capture?.Release();
             _capture?.Dispose();
         }

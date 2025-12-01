@@ -1,6 +1,5 @@
 ﻿using System;
 using ANPR.Core.Services; // Namespace dos novos serviços
-using ANPR.Core.VideoSources; // Namespace das fontes de vídeo
 using ANPR.Shared.Interfaces;
 
 namespace ANPR.Core
@@ -22,8 +21,18 @@ namespace ANPR.Core
                 // Os componentes agora são independentes. Se um falhar, sabemos exatamente qual.
 
                 Console.WriteLine("[Init] Inicializando Câmera/Vídeo...");
-                // Tenta câmera (0), se falhar, vai para null ou trate com try-catch
-                IVideoSource videoSource = new VideoFileSource(videoTeste);
+
+                // --- ALTERAÇÃO AQUI: Usar LiveCameraSource em vez de VideoFileSource ---
+                // O índice 0 geralmente é a webcam integrada. Se tiver mais de uma, tente 1.
+                IVideoSource videoSource = new LiveCameraSource(0);
+
+                // Verificação de segurança: Se a câmera não abrir, avisar o usuário.
+                if (!videoSource.IsAvailable)
+                {
+                    Console.WriteLine("[AVISO] Não foi possível acessar a câmera 0.");
+                    Console.WriteLine("Tentando fallback para vídeo: " + videoTeste);
+                    videoSource = new VideoFileSource(videoTeste);
+                }
                 // Nota: Se tiver a classe LiveCameraSource, use: new LiveCameraSource(0);
 
                 Console.WriteLine("[Init] Inicializando Detector YOLO...");

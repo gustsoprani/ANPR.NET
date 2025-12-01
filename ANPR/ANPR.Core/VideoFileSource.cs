@@ -1,58 +1,62 @@
-﻿// No ANPR.Core/VideoFileSource.cs
-
-using ANPR.Shared; // <-- Nosso contrato POO
+﻿using ANPR.Shared.Interfaces;
 using OpenCvSharp;
+using System;
 using System.IO;
 
 namespace ANPR.Core
 {
-    // Esta classe TAMBÉM herda (assina) o mesmo contrato IVideoSource
     public class VideoFileSource : IVideoSource
     {
         private readonly string _filePath;
         private VideoCapture? _capture;
+        private int _frameCount = 0;
 
         public VideoFileSource(string filePath)
         {
             _filePath = filePath;
-        }
-
-        public bool Open()
-        {
-            // A única diferença: em vez de um número (0), 
-            // passamos o caminho do arquivo de vídeo.
-            if (!File.Exists(_filePath))
+            // Tenta abrir imediatamente ao criar
+            if (File.Exists(_filePath))
             {
-                Console.WriteLine($"[ERRO] Arquivo de vídeo não encontrado: {_filePath}");
-                return false;
+                _capture = new VideoCapture(_filePath);
             }
-
-            _capture = new VideoCapture(_filePath);
-            return _capture.IsOpened();
         }
+
+        // --- Implementação da Interface IVideoSource ---
+
+        public bool IsAvailable => _capture?.IsOpened() ?? false;
+
+        public int FrameCount => _frameCount;
+
+        public int TotalFrames => _capture != null ? (int)_capture.Get(VideoCaptureProperties.FrameCount) : 0;
+
+        public double CurrentFps => _capture != null ? _capture.Get(VideoCaptureProperties.Fps) : 0;
 
         public Mat GetNextFrame()
         {
-            var frame = new Mat();
-            _capture?.Read(frame);
+            if (_capture == null || !_capture.IsOpened())
+                return new Mat();
 
-            // LÓGICA EXTRA: Se o vídeo acabar, reinicie!
-            // Isso faz com que a demo rode em loop.
+            var frame = new Mat();
+            _capture.Read(frame);
+
+            // Loop infinito: Se o vídeo acabar, reinicia
             if (frame.Empty())
             {
                 Console.WriteLine("[INFO] Fim do vídeo. Reiniciando...");
-                _capture?.Set(VideoCaptureProperties.PosFrames, 0); // Volta para o frame 0
-                _capture?.Read(frame); // Lê o primeiro frame
+                _capture.Set(VideoCaptureProperties.PosFrames, 0);
+                _frameCount = 0; // Reseta contador
+                _capture.Read(frame);
+            }
+            else
+            {
+                _frameCount++;
             }
 
             return frame;
         }
 
-        public bool IsOpened() => _capture?.IsOpened() ?? false;
-
         public void Dispose()
         {
-            // Limpa os recursos
             _capture?.Release();
             _capture?.Dispose();
         }
