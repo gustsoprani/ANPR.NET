@@ -7,6 +7,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.22" />
+  </ItemGroup>
+
+  <ItemGroup>
 	  <ProjectReference Include="..\ANPR.Shared\ANPR.Shared.csproj" />
 	  <ProjectReference Include="..\ANPR.Core\ANPR.Core.csproj" />
   </ItemGroup>

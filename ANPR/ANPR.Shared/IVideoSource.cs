@@ -47,6 +47,7 @@ namespace ANPR.Shared.Interfaces
         List<DatabaseVehicle> GetAllVehicles();
         void AddVehicle(DatabaseVehicle vehicle);
         bool RemoveVehicle(string plateNumber);
+        List<AccessLog> GetHistory(int limit = 100);
     }
 
     /// <summary>

@@ -29,6 +29,7 @@ namespace ANPR.Shared.Models
         public float Confidence { get; set; }
         public bool IsValid { get; set; }
         public TimeSpan ProcessingTime { get; set; }
+        public byte[] DebugImage { get; set; }
 
         public override string ToString()
         {
@@ -81,5 +82,18 @@ namespace ANPR.Shared.Models
         public DateTime EventTime { get; set; }
         public Mat FrameSnapshot { get; set; }
         public Mat PlateSnapshot { get; set; }
+    }
+
+    /// <summary>
+    /// Registro histórico de uma tentativa de acesso
+    /// </summary>
+    public class AccessLog
+    {
+        public int Id { get; set; }
+        public string PlateNumber { get; set; }
+        public string VehicleInfo { get; set; } // Ex: "Carlos - Civic" ou "Desconhecido"
+        public bool IsAuthorized { get; set; }
+        public string Reason { get; set; }      // Ex: "Placa não cadastrada"
+        public DateTime Timestamp { get; set; }
     }
 }

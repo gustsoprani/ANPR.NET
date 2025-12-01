@@ -55,21 +55,31 @@ namespace ANPR.Core.Services
             string rawText = string.Empty;
             string processedText = string.Empty;
             bool isValid = false;
+            byte[] processedImageBytes = null; // Variável para guardar a imagem
 
-            // MANTENHA ESTE USING! Ele é vital para não travar o PC.
+            // O 'using' garante a limpeza da memória RAM
             using (Mat processed = PreprocessPlateOptimized(plateImage))
             {
-                // === DEBUG (Salva imagem para conferirmos) ===
-                string debugFilename = $"debug_{DateTime.Now:HH-mm-ss-fff}.png";
-                Cv2.ImWrite(debugFilename, processed);
-                Console.WriteLine($"[DEBUG] Imagem salva: {debugFilename}");
-                // ============================================
+                // =================================================================
+                // [ALTERAÇÃO] Em vez de salvar no disco, salvamos na memória!
+                // =================================================================
 
-                // Converte para memória
-                byte[] imageBytes = processed.ToBytes(".png");
+                // 1. Converter a imagem processada (P&B) para bytes JPG
+                processedImageBytes = processed.ToBytes(".jpg");
 
-                using (var pix = Pix.LoadFromMemory(imageBytes))
+                // 2. (Opcional) Comente esta linha para parar de encher a pasta bin de imagens
+                // string debugFilename = $"debug_{DateTime.Now:HH-mm-ss-fff}.png";
+                // Cv2.ImWrite(debugFilename, processed); 
+                // Console.WriteLine($"[DEBUG] Imagem salva: {debugFilename}");
+
+                // =================================================================
+
+                // Converte para o formato que o Tesseract lê (PNG ou Raw)
+                byte[] imageBytesForTesseract = processed.ToBytes(".png");
+
+                using (var pix = Pix.LoadFromMemory(imageBytesForTesseract))
                 {
+                    // SingleBlock é o modo correto que definimos antes
                     using (var page = _tesseractEngine.Process(pix, PageSegMode.SingleBlock))
                     {
                         rawText = page.GetText().Trim().ToUpper()
@@ -77,13 +87,14 @@ namespace ANPR.Core.Services
                             .Replace("\n", "")
                             .Replace("\r", "")
                             .Replace("\t", "");
+
                         confidence = page.GetMeanConfidence();
                     }
                 }
 
                 processedText = PostProcess(rawText);
                 isValid = _plateCharPattern.IsMatch(processedText);
-            } // Aqui a memória da imagem 'processed' é liberada automaticamente
+            }
 
             sw.Stop();
 
@@ -93,7 +104,8 @@ namespace ANPR.Core.Services
                 ProcessedText = processedText,
                 Confidence = confidence,
                 IsValid = isValid,
-                ProcessingTime = sw.Elapsed
+                ProcessingTime = sw.Elapsed,
+                DebugImage = processedImageBytes // [NOVO] Enviamos a imagem aqui!
             };
         }
 

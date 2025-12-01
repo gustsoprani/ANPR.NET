@@ -152,7 +152,7 @@ namespace ANPR.Core.Services
                                     webResult.IsAuthorized = accessResult.IsAuthorized;
 
                                     // Envia a imagem recortada da placa também (opcional)
-                                    webResult.DebugImage = plateRoi.ToBytes(".jpg");
+                                    webResult.DebugImage = ocrResult.DebugImage;
                                 }
                             }
                         }

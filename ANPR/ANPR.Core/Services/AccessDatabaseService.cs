@@ -1,222 +1,194 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using OpenCvSharp;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using ANPR.Shared.Models;
 using ANPR.Shared.Interfaces;
+using ANPR.Core.Data;
 
 namespace ANPR.Core.Services
 {
-    /// <summary>
-    /// Serviço de banco de dados para controle de acesso
-    /// Implementa busca com Levenshtein distance para tolerância
-    /// </summary>
     public class AccessDatabaseService : IAccessDatabase
     {
-        private readonly List<DatabaseVehicle> _vehicles;
-        // Agora o campo será usado
-        private readonly int _maxLevenshteinDistance = 3; // Tolerar 3 caractere diferente
+        // Cache na RAM para leitura ultrarrápida (O YOLO não pode esperar o disco!)
+        private List<DatabaseVehicle> _vehicleCache;
+        private readonly IServiceScopeFactory _scopeFactory;
+        private readonly int _maxLevenshteinDistance = 3;
 
-        public AccessDatabaseService()
+        public AccessDatabaseService(IServiceScopeFactory scopeFactory)
         {
-            _vehicles = new List<DatabaseVehicle>();
-            InitializeDefaultVehicles();
+            _scopeFactory = scopeFactory;
+            _vehicleCache = new List<DatabaseVehicle>();
+
+            // Carrega os dados do SQLite para a RAM ao iniciar
+            InitializeDatabase();
         }
 
-        /// <summary>
-        /// Inicializa banco com veículos de teste
-        /// </summary>
-        private void InitializeDefaultVehicles()
+        private void InitializeDatabase()
         {
-            _vehicles.Add(new DatabaseVehicle
+            using (var scope = _scopeFactory.CreateScope())
             {
-                Id = 1,
-                PlateNumber = "PWY3G12",
-                OwnerName = "João Silva",
-                VehicleModel = "Volkswagen Golf",
-                VehicleColor = "Branco",
-                IsActive = true,
-                RegisteredDate = DateTime.Now
-            });
+                var db = scope.ServiceProvider.GetRequiredService<AnprDbContext>();
 
-            _vehicles.Add(new DatabaseVehicle
-            {
-                Id = 2,
-                PlateNumber = "OZU5J50",
-                OwnerName = "Maria Santos",
-                VehicleModel = "Toyota Corolla",
-                VehicleColor = "Preto",
-                IsActive = true,
-                RegisteredDate = DateTime.Now
-            });
+                // Cria o arquivo .db se não existir
+                db.Database.EnsureCreated();
 
-            _vehicles.Add(new DatabaseVehicle
-            {
-                Id = 3,
-                PlateNumber = "POX4G21",
-                OwnerName = "Carlos Costa",
-                VehicleModel = "Honda Civic",
-                VehicleColor = "Prata",
-                IsActive = true,
-                RegisteredDate = DateTime.Now
-            });
+                // Carrega para o Cache
+                _vehicleCache = db.Vehicles.Where(v => v.IsActive).ToList();
 
-            _vehicles.Add(new DatabaseVehicle
-            {
-                Id = 4,
-                PlateNumber = "GTT0F37",
-                OwnerName = "Carlos Costa",
-                VehicleModel = "Honda Civic",
-                VehicleColor = "Prata",
-                IsActive = true,
-                RegisteredDate = DateTime.Now
-            });
-
-            Console.WriteLine($"📦 {_vehicles.Count} veículos carregados do banco de dados");
+                // Se estiver vazio, cria dados de teste (opcional)
+                if (!_vehicleCache.Any())
+                {
+                    var padrao = new DatabaseVehicle { PlateNumber = "GTT0F37", OwnerName = "Carlos Costa", VehicleModel = "Honda Civic", VehicleColor = "Prata", IsActive = true, RegisteredDate = DateTime.Now };
+                    db.Vehicles.Add(padrao);
+                    db.SaveChanges();
+                    _vehicleCache.Add(padrao);
+                    Console.WriteLine("📦 Banco criado e populado com dados padrão.");
+                }
+                else
+                {
+                    Console.WriteLine($"📦 {_vehicleCache.Count} veículos carregados do SQLite.");
+                }
+            }
         }
 
-        /// <summary>
-        /// Busca veículo por placa com tolerância a erros
-        /// </summary>
+        // --- LEITURA (Usa Cache - Rápido) ---
+
         public DatabaseVehicle FindVehicle(string plateNumber)
         {
-            if (string.IsNullOrEmpty(plateNumber))
-                return null;
+            // Busca exata primeiro
+            var exact = _vehicleCache.FirstOrDefault(v => v.PlateNumber == plateNumber);
+            if (exact != null) return exact;
 
-            // Primeiro tentar match exato
-            var exact = _vehicles.FirstOrDefault(v => v.PlateNumber == plateNumber && v.IsActive);
-            if (exact != null)
+            // Busca Fuzzy (Levenshtein) na memória
+            foreach (var v in _vehicleCache)
             {
-                Console.WriteLine($"✅ Match exato encontrado: {plateNumber}");
-                return exact;
+                int dist = GetLevenshteinDistance(plateNumber, v.PlateNumber);
+                if (dist <= _maxLevenshteinDistance)
+                {
+                    Console.WriteLine($"🔍 Match fuzzy encontrado: {v.PlateNumber} (distância: {dist})");
+                    return v;
+                }
             }
-
-            // Match fuzzy com tolerância de _maxLevenshteinDistance caracteres
-            var fuzzy = _vehicles
-                .Where(v => v.IsActive)
-                .Select(v => new { Vehicle = v, Distance = GetLevenshteinDistance(plateNumber, v.PlateNumber) })
-                .Where(x => x.Distance <= _maxLevenshteinDistance) // ⬅️ ALTERADO: Usa _maxLevenshteinDistance
-                .OrderBy(x => x.Distance)
-                .FirstOrDefault();
-
-            if (fuzzy != null)
-            {
-                Console.WriteLine($"⚠️ Match fuzzy encontrado: {fuzzy.Vehicle.PlateNumber} (distância: {fuzzy.Distance})");
-                return fuzzy.Vehicle;
-            }
-
-            Console.WriteLine($"❌ Nenhum match encontrado para: {plateNumber}");
+            Console.WriteLine($"❓ Nenhum match encontrado para: {plateNumber}");
             return null;
         }
 
-        /// <summary>
-        /// Implementação de Levenshtein distance
-        /// Calcula número mínimo de edições para transformar uma string em outra
-        /// </summary>
-        public int GetLevenshteinDistance(string s1, string s2)
+        public List<DatabaseVehicle> GetAllVehicles()
         {
-            if (s1 == s2) return 0;
-            if (s1.Length == 0) return s2.Length;
-            if (s2.Length == 0) return s1.Length;
-
-            int[] row0 = new int[s2.Length + 1];
-            int[] row1 = new int[s2.Length + 1];
-
-            for (int i = 0; i <= s2.Length; i++)
-                row0[i] = i;
-
-            for (int i = 1; i <= s1.Length; i++)
-            {
-                row1[0] = i;
-
-                for (int j = 1; j <= s2.Length; j++)
-                {
-                    int cost = (s1[i - 1] == s2[j - 1]) ? 0 : 1;
-                    row1[j] = Math.Min(
-                        Math.Min(row0[j] + 1, row1[j - 1] + 1),
-                        row0[j - 1] + cost);
-                }
-
-                // Swap
-                var tmp = row0;
-                row0 = row1;
-                row1 = tmp;
-            }
-
-            return row0[s2.Length];
+            return _vehicleCache.ToList(); // Retorna cópia da lista
         }
 
-        /// <summary>
-        /// Registra acesso no log
-        /// </summary>
+        // --- ESCRITA (Usa SQLite + Atualiza Cache) ---
+
+        public void AddVehicle(DatabaseVehicle vehicle)
+        {
+            using (var scope = _scopeFactory.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AnprDbContext>();
+
+                // Salva no Disco
+                db.Vehicles.Add(vehicle);
+                db.SaveChanges();
+
+                // Atualiza a RAM
+                _vehicleCache.Add(vehicle);
+                Console.WriteLine($"💾 Veículo salvo no SQLite: {vehicle.PlateNumber}");
+            }
+        }
+
+        public bool RemoveVehicle(string plateNumber)
+        {
+            // Remove da RAM
+            var cachedVehicle = _vehicleCache.FirstOrDefault(v => v.PlateNumber == plateNumber);
+            if (cachedVehicle != null) _vehicleCache.Remove(cachedVehicle);
+
+            // Remove do Disco (Soft Delete)
+            using (var scope = _scopeFactory.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AnprDbContext>();
+                var dbVehicle = db.Vehicles.FirstOrDefault(v => v.PlateNumber == plateNumber);
+
+                if (dbVehicle != null)
+                {
+                    dbVehicle.IsActive = false; // Soft Delete
+                    // Ou db.Vehicles.Remove(dbVehicle); // Hard Delete
+                    db.SaveChanges();
+                    Console.WriteLine($"❌ Veículo removido do SQLite: {plateNumber}");
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // Algoritmo Levenshtein (Mantido igual)
+        public int GetLevenshteinDistance(string s1, string s2)
+        {
+            if (string.IsNullOrEmpty(s1)) return string.IsNullOrEmpty(s2) ? 0 : s2.Length;
+            if (string.IsNullOrEmpty(s2)) return s1.Length;
+
+            int n = s1.Length;
+            int m = s2.Length;
+            int[,] d = new int[n + 1, m + 1];
+
+            for (int i = 0; i <= n; d[i, 0] = i++) { }
+            for (int j = 0; j <= m; d[0, j] = j++) { }
+
+            for (int i = 1; i <= n; i++)
+            {
+                for (int j = 1; j <= m; j++)
+                {
+                    int cost = (s2[j - 1] == s1[i - 1]) ? 0 : 1;
+                    d[i, j] = Math.Min(Math.Min(d[i - 1, j] + 1, d[i, j - 1] + 1), d[i - 1, j - 1] + cost);
+                }
+            }
+            return d[n, m];
+        }
+
         public bool LogAccess(AccessControlResult result)
         {
             try
             {
-                string status = result.IsAuthorized ? "✅ ACESSO PERMITIDO" : "❌ ACESSO NEGADO";
-                Console.WriteLine($"\n{'=' * 60}");
-                Console.WriteLine($"{status}");
-                Console.WriteLine($"Placa: {result.PlateText}");
-                Console.WriteLine($"Veículo: {result.VehicleInfo}");
-                Console.WriteLine($"Data/Hora: {result.AccessTime:dd/MM/yyyy HH:mm:ss}");
-                Console.WriteLine($"Motivo: {result.Reason}");
-                Console.WriteLine($"{'=' * 60}\n");
+                using (var scope = _scopeFactory.CreateScope())
+                {
+                    var db = scope.ServiceProvider.GetRequiredService<AnprDbContext>();
 
-                // Aqui você poderia persistir em banco de dados real
-                // await _context.AccessLogs.AddAsync(new AccessLog { ... });
+                    var log = new AccessLog
+                    {
+                        PlateNumber = result.PlateText,
+                        VehicleInfo = result.VehicleInfo,
+                        IsAuthorized = result.IsAuthorized,
+                        Reason = result.Reason,
+                        Timestamp = result.AccessTime
+                    };
 
+                    db.AccessLogs.Add(log);
+                    db.SaveChanges();
+                    // Console.WriteLine($"📝 Log salvo: {log.PlateNumber}"); // Opcional
+                }
                 return true;
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"❌ Erro ao registrar acesso: {ex.Message}");
+                Console.WriteLine($"❌ Erro ao salvar log: {ex.Message}");
                 return false;
             }
         }
-
-        /// <summary>
-        /// Obtém todos os veículos cadastrados
-        /// </summary>
-        public List<DatabaseVehicle> GetAllVehicles()
+        public List<AccessLog> GetHistory(int limit = 100)
         {
-            return _vehicles.Where(v => v.IsActive).ToList();
+            using (var scope = _scopeFactory.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AnprDbContext>();
+
+                // Retorna os mais recentes primeiro
+                return db.AccessLogs
+                         .OrderByDescending(x => x.Timestamp)
+                         .Take(limit)
+                         .ToList();
+            }
         }
 
-        /// <summary>
-        /// Adiciona novo veículo
-        /// </summary>
-        public void AddVehicle(DatabaseVehicle vehicle)
-        {
-            if (vehicle == null)
-                throw new ArgumentNullException(nameof(vehicle));
-
-            if (_vehicles.Any(v => v.PlateNumber == vehicle.PlateNumber))
-                throw new InvalidOperationException($"Veículo com placa {vehicle.PlateNumber} já existe");
-
-            vehicle.Id = _vehicles.Max(v => v.Id) + 1;
-            vehicle.RegisteredDate = DateTime.Now;
-            _vehicles.Add(vehicle);
-
-            Console.WriteLine($"✅ Veículo adicionado: {vehicle.PlateNumber} - {vehicle.OwnerName}");
-        }
-
-        /// <summary>
-        /// Remove veículo (soft delete)
-        /// </summary>
-        public bool RemoveVehicle(string plateNumber)
-        {
-            var vehicle = _vehicles.FirstOrDefault(v => v.PlateNumber == plateNumber);
-            if (vehicle == null)
-                return false;
-
-            vehicle.IsActive = false;
-            Console.WriteLine($"❌ Veículo desativado: {plateNumber}");
-            return true;
-        }
-
-        public void Dispose()
-        {
-            _vehicles.Clear();
-        }
+        public void Dispose() { }
     }
 }

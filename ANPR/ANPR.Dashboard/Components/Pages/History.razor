@@ -1,0 +1,71 @@
+﻿@page "/history"
+@using ANPR.Shared.Models
+@using ANPR.Shared.Interfaces
+@inject IAccessDatabase DatabaseService
+
+<PageTitle>Histórico de Acessos</PageTitle>
+
+<div class="container mt-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h1>📜 Histórico de Acessos</h1>
+        <button class="btn btn-outline-primary" @onclick="LoadHistory">🔄 Atualizar</button>
+    </div>
+
+    <div class="card shadow-sm">
+        <div class="card-body p-0">
+            <table class="table table-striped table-hover mb-0">
+                <thead class="table-dark">
+                    <tr>
+                        <th>Hora</th>
+                        <th>Placa</th>
+                        <th>Status</th>
+                        <th>Veículo / Motorista</th>
+                        <th>Motivo</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var log in Logs)
+                    {
+                        <tr>
+                            <td>@log.Timestamp.ToString("dd/MM/yyyy HH:mm:ss")</td>
+                            <td class="fw-bold font-monospace">@log.PlateNumber</td>
+                            <td>
+                                @if (log.IsAuthorized)
+                                {
+                                    <span class="badge bg-success">PERMITIDO</span>
+                                }
+                                else
+                                {
+                                    <span class="badge bg-danger">NEGADO</span>
+                                }
+                            </td>
+                            <td>@log.VehicleInfo</td>
+                            <td class="text-muted small">@log.Reason</td>
+                        </tr>
+                    }
+                    @if (Logs.Count == 0)
+                    {
+                        <tr>
+                            <td colspan="5" class="text-center py-4 text-muted">Nenhum registro encontrado.</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+@code {
+    private List<AccessLog> Logs = new();
+
+    protected override void OnInitialized()
+    {
+        LoadHistory();
+    }
+
+    private void LoadHistory()
+    {
+        // Carrega os últimos 100 registros
+        Logs = DatabaseService.GetHistory(100);
+    }
+}
