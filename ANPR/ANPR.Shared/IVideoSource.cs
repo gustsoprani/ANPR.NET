@@ -1,17 +1,62 @@
-﻿// No ANPR.Shared/IVideoSource.cs
-
-using OpenCvSharp; // <-- Precisamos disso!
+﻿using ANPR.Shared.Models;
+using OpenCvSharp;
 using System;
+using System.Collections.Generic;
 
-namespace ANPR.Shared
+namespace ANPR.Shared.Interfaces
 {
-    // Este é o "contrato" de POO.
-    // Qualquer classe que "assinar" este contrato (IVideoSource)
-    // é obrigada a ter todos esses métodos.
+    /// <summary>
+    /// Interface para fontes de vídeo (câmera, arquivo, etc)
+    /// </summary>
     public interface IVideoSource : IDisposable
     {
-        bool Open();           // Tenta abrir a câmera ou o arquivo
-        bool IsOpened();       // Verifica se está funcionando
-        Mat GetNextFrame();    // Pega o próximo frame da fonte
+        Mat GetNextFrame();
+        bool IsAvailable { get; }
+        int FrameCount { get; }
+        int TotalFrames { get; }
+        double CurrentFps { get; }
+    }
+
+    /// <summary>
+    /// Interface para detector de placas (YOLO)
+    /// </summary>
+    public interface IPlateDetector : IDisposable
+    {
+        List<PlateDetection> Detect(Mat frame);
+        float ConfidenceThreshold { get; set; }
+    }
+
+
+    /// <summary>
+    /// Interface para mecanismo de OCR (Tesseract)
+    /// </summary>
+    public interface IOcrEngine : IDisposable
+    {
+        OcrResult ReadPlate(Mat plateImage);
+        string PostProcess(string rawText);
+    }
+
+    /// <summary>
+    /// Interface para banco de dados de controle de acesso
+    /// </summary>
+    public interface IAccessDatabase : IDisposable
+    {
+        DatabaseVehicle FindVehicle(string plateNumber);
+        int GetLevenshteinDistance(string s1, string s2);
+        bool LogAccess(AccessControlResult result);
+        List<DatabaseVehicle> GetAllVehicles();
+        void AddVehicle(DatabaseVehicle vehicle);
+        bool RemoveVehicle(string plateNumber);
+    }
+
+    /// <summary>
+    /// Interface para logger centralizado
+    /// </summary>
+    public interface IAccessLogger
+    {
+        void LogInfo(string message);
+        void LogWarning(string message);
+        void LogError(string message, Exception ex = null);
+        void LogDebug(string message);
     }
 }

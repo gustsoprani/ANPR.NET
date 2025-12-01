@@ -1,55 +1,63 @@
-﻿// No ANPR.Core/Program.cs
-
-using ANPR.Shared; // <-- Precisamos da interface
-using OpenCvSharp; // <-- Precisamos do Cv2.ImShow e Mat
-using System;
+﻿using System;
+using ANPR.Core.Services; // Namespace dos novos serviços
+using ANPR.Core.VideoSources; // Namespace das fontes de vídeo
+using ANPR.Shared.Interfaces;
 
 namespace ANPR.Core
 {
-    internal class Program
+    class Program
     {
         static void Main(string[] args)
         {
-            Console.WriteLine(">>> SISTEMA ANPR INICIADO <<<");
+            Console.WriteLine(">>> INICIALIZANDO SISTEMA ANPR MODULAR <<<");
 
-            // 1. Definir o nome do vídeo de demo (para a Fase 5)
-            string videoFallback = "video_teste.mp4";
+            // 1. Configurar Caminhos (Verifique se os arquivos existem nestas pastas!)
+            string modeloYolo = "models/best.onnx";
+            string tessData = "tessdata";
+            string videoTeste = "video_teste.mp4";
 
-            // 2. Criar a variável POO (contrato)
-            IVideoSource videoSource;
-
-            // 3. TENTAR ABRIR A CÂMERA REAL
-            Console.WriteLine("[INFO] Tentando abrir a câmera (DroidCam)...");
-            videoSource = new LiveCameraSource(0); // 0 = primeira câmera
-
-            if (!videoSource.Open())
+            try
             {
-                // 4. SE FALHAR, TENTAR O VÍDEO DE FALLBACK
-                Console.WriteLine("[AVISO] Câmera não encontrada.");
-                Console.WriteLine($"[INFO] Tentando carregar o vídeo: '{videoFallback}'...");
+                // 2. Instanciar as "Ferramentas" (Serviços)
+                // Os componentes agora são independentes. Se um falhar, sabemos exatamente qual.
 
-                videoSource = new VideoFileSource(videoFallback);
+                Console.WriteLine("[Init] Inicializando Câmera/Vídeo...");
+                // Tenta câmera (0), se falhar, vai para null ou trate com try-catch
+                IVideoSource videoSource = new VideoFileSource(videoTeste);
+                // Nota: Se tiver a classe LiveCameraSource, use: new LiveCameraSource(0);
 
-                if (!videoSource.Open())
+                Console.WriteLine("[Init] Inicializando Detector YOLO...");
+                IPlateDetector yoloService = new YoloDetectionService(modeloYolo, confidenceThreshold: 0.4f);
+
+                Console.WriteLine("[Init] Inicializando OCR Tesseract...");
+                IOcrEngine ocrService = new TesseractOcrService(tessData);
+
+                Console.WriteLine("[Init] Inicializando Banco de Dados...");
+                IAccessDatabase dbService = new AccessDatabaseService();
+
+                // 3. Injetar tudo no Processador Principal
+                // Aqui "ligamos" os componentes
+                using (var processor = new AnprProcessor(
+                    videoSource,
+                    yoloService,
+                    ocrService,
+                    dbService,
+                    framesPerDetection: 5, // Otimização: YOLO a cada 5 frames
+                    framesToConfirm: 3     // Precisa de 3 confirmações para abrir
+                ))
                 {
-                    // 5. SE AMBOS FALHAREM, DESISTIR.
-                    Console.WriteLine("[ERRO FATAL] Falha ao abrir a câmera E o vídeo de fallback.");
-                    Console.WriteLine("Verifique se a câmera está conectada ou se o 'video_teste.mp4' existe.");
-                    Console.WriteLine("Pressione qualquer tecla para sair...");
-                    Console.ReadKey();
-                    return; // Encerra o programa
+                    // 4. Rodar o loop
+                    processor.Start();
                 }
             }
-
-            Console.WriteLine("[INFO] Fonte de vídeo carregada com sucesso.");
-
-            // (O 'using' garante que o método 'Dispose' será chamado no final)
-            using (var processador = new AnprProcessor(videoSource))
+            catch (Exception ex)
             {
-                processador.StartProcessing();
+                Console.WriteLine($"[ERRO FATAL] {ex.Message}");
+                Console.WriteLine(ex.StackTrace);
             }
 
-            Console.WriteLine(">>> SISTEMA ANPR ENCERRADO <<<");
+            Console.WriteLine("Pressione ENTER para fechar...");
+            Console.ReadLine();
         }
     }
 }
