@@ -20,9 +20,10 @@ namespace ANPR.Dashboard
             string modelPath = Path.Combine(baseDir, "models", "best.onnx");
             string tessData = Path.Combine(baseDir, "tessdata");
             builder.Services.AddDbContext<AnprDbContext>(options =>
-                options.UseSqlite("Data Source=anpr.db"));  
+                options.UseSqlite("Data Source=anpr.db"));
 
-            builder.Services.AddSingleton<IVideoSource>(sp => new LiveCameraSource(0));
+            //builder.Services.AddSingleton<IVideoSource>(sp => new LiveCameraSource(0)); // Webcam
+            builder.Services.AddSingleton<IVideoSource>(sp => new VideoFileSource(@"C:\Users\Guto\source\repos\ANPR.NET\ANPR\ANPR.Dashboard\video.mp4")); // Video
             builder.Services.AddSingleton<IPlateDetector>(sp => new YoloDetectionService(modelPath, 0.4f));
             builder.Services.AddSingleton<IOcrEngine>(sp => new TesseractOcrService(tessData));
             builder.Services.AddSingleton<IAccessDatabase, AccessDatabaseService>();
